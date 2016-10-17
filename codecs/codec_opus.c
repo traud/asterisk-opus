@@ -37,7 +37,11 @@
 
 #include "asterisk.h"
 
+#ifdef ASTERISK_REGISTER_FILE
+ASTERISK_REGISTER_FILE()
+#elif ASTERISK_FILE_VERSION
 ASTERISK_FILE_VERSION(__FILE__, "$Revision: $")
+#endif
 
 #include <opus/opus.h>
 
