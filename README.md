@@ -15,7 +15,7 @@ That way, you get a binary module, which is closed software. Here, this reposito
 This repository is for Asterisk 13 and newer. If you still use Asterisk 11, please, [continue there…](https://github.com/meetecho/asterisk-opus) however, that variant does not offer negotiation of SDP parameters (fmtp). If you need that, please, upgrade to Asterisk 13.7 or newer.
 
 ## Installing
-At least Asterisk 13.7 is required. These changes were last tested with Asterisk 13.12 (and Asterisk 14.1). If you use a newer version and transcoding fails, please, [report](https://help.github.com/articles/creating-an-issue/)!
+At least Asterisk 13.7 is required. These changes were last tested with Asterisk 13.13.0 (and Asterisk 14.1). If you use a newer version and transcoding fails, please, [report](https://help.github.com/articles/creating-an-issue/)!
 
 	cd /usr/src/
 	wget downloads.asterisk.org/pub/telephony/asterisk/asterisk-13-current.tar.gz
