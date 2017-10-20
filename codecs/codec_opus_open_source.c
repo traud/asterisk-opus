@@ -60,7 +60,7 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: $")
 
 #include "asterisk/opus.h"              /* for CODEC_OPUS_DEFAULT_* */
 
-#define	BUFFER_SAMPLES	5760
+#define	BUFFER_SAMPLES	11520
 #define	MAX_CHANNELS	2
 #define	OPUS_SAMPLES	960
 
@@ -90,6 +90,7 @@ struct opus_coder_pvt {
 	int multiplier;
 	int id;
 	int16_t buf[BUFFER_SAMPLES];
+	int16_t buf_stereo[BUFFER_SAMPLES * 2];
 	int framesize;
 	int inited;
 	int channels;
@@ -106,7 +107,7 @@ struct opus_attr {
 	unsigned int fec;
 	unsigned int dtx;
 	unsigned int spropmaxcapturerate; /* FIXME: not utilised, yet */
-	unsigned int spropstereo; /* FIXME: currently, we are just mono */
+	unsigned int spropstereo;
 };
 
 /* Helper methods */
@@ -116,7 +117,7 @@ static int opus_encoder_construct(struct ast_trans_pvt *pvt, int sampling_rate)
 	struct opus_attr *attr = pvt->explicit_dst ? ast_format_get_attribute_data(pvt->explicit_dst) : NULL;
 	const opus_int32 bitrate = attr ? attr->maxbitrate  : CODEC_OPUS_DEFAULT_BITRATE;
 	const int maxplayrate    = attr ? attr->maxplayrate : CODEC_OPUS_DEFAULT_MAX_PLAYBACK_RATE;
-	const int channels       = attr ? attr->stereo + 1  : CODEC_OPUS_DEFAULT_STEREO + 1;
+	const int channels       = attr ? attr->spropstereo + 1  : CODEC_OPUS_DEFAULT_STEREO + 1;
 	const opus_int32 vbr     = attr ? !(attr->cbr)      : !CODEC_OPUS_DEFAULT_CBR;
 	const opus_int32 fec     = attr ? attr->fec         : CODEC_OPUS_DEFAULT_FEC;
 	const opus_int32 dtx     = attr ? attr->dtx         : CODEC_OPUS_DEFAULT_DTX;
@@ -150,11 +151,12 @@ static int opus_encoder_construct(struct ast_trans_pvt *pvt, int sampling_rate)
 	opvt->sampling_rate = sampling_rate;
 	opvt->multiplier = 48000 / sampling_rate;
 	opvt->framesize = sampling_rate / 50;
+	opvt->channels = channels;
 	opvt->id = ast_atomic_fetchadd_int(&usage.encoder_id, 1) + 1;
 
 	ast_atomic_fetchadd_int(&usage.encoders, +1);
 
-	ast_debug(3, "Created encoder #%d (%d -> opus)\n", opvt->id, sampling_rate);
+	ast_debug(3, "Created encoder #%d (%d -> opus) (channels %d)\n", opvt->id, sampling_rate, opvt->channels);
 
 	return 0;
 }
@@ -162,12 +164,16 @@ static int opus_encoder_construct(struct ast_trans_pvt *pvt, int sampling_rate)
 static int opus_decoder_construct(struct ast_trans_pvt *pvt, struct ast_frame *f)
 {
 	struct opus_coder_pvt *opvt = pvt->pvt;
-	/* struct opus_attr *attr = ast_format_get_attribute_data(f->subclass.format); */
+	struct opus_attr *attr = ast_format_get_attribute_data(f->subclass.format);
 	int error = 0;
 
 	opvt->sampling_rate = pvt->t->dst_codec.sample_rate;
 	opvt->multiplier = 48000 / opvt->sampling_rate;
-	opvt->channels = /* attr ? attr->spropstereo + 1 :*/ 1; /* FIXME */;
+
+	opvt->channels = CODEC_OPUS_DEFAULT_STEREO + 1;
+	if (attr != NULL) {
+		opvt->channels = attr->stereo + 1;
+	}
 
 	opvt->opus = opus_decoder_create(opvt->sampling_rate, opvt->channels, &error);
 
@@ -180,7 +186,7 @@ static int opus_decoder_construct(struct ast_trans_pvt *pvt, struct ast_frame *f
 
 	ast_atomic_fetchadd_int(&usage.decoders, +1);
 
-	ast_debug(3, "Created decoder #%d (opus -> %d)\n", opvt->id, opvt->sampling_rate);
+	ast_debug(3, "Created decoder #%d (opus -> %d) (channels %d)\n", opvt->id, opvt->sampling_rate, opvt->channels);
 
 	return 0;
 }
@@ -205,6 +211,16 @@ static int lintoopus_framein(struct ast_trans_pvt *pvt, struct ast_frame *f)
 {
 	struct opus_coder_pvt *opvt = pvt->pvt;
 
+	/* One time upgrade to stereo. */
+	struct opus_attr *attr = ast_format_get_attribute_data(pvt->f.subclass.format);
+	if (attr != NULL) {
+		if (attr->spropstereo + 1 != opvt->channels) {
+			ast_log(LOG_ERROR, "Changing attr %d opvt channels %d \n", attr->stereo, opvt->channels);
+			opus_encoder_destroy(opvt->opus);
+			opus_encoder_construct(pvt, pvt->t->src_codec.sample_rate);
+		}
+	}
+
 	/* XXX We should look at how old the rest of our stream is, and if it
 	   is too old, then we should overwrite it entirely, otherwise we can
 	   get artifacts of earlier talk that do not belong */
@@ -220,17 +236,30 @@ static struct ast_frame *lintoopus_frameout(struct ast_trans_pvt *pvt)
 	struct ast_frame *result = NULL;
 	struct ast_frame *last = NULL;
 	int samples = 0; /* output samples */
+	int interleaved = pvt->interleaved_stereo ? 2 : 1;
+	int status;
+	int i;
+	int k;
 
-	while (pvt->samples >= opvt->framesize) {
-		/* status is either error or output bytes */
-		const int status = opus_encode(opvt->opus,
-			opvt->buf + samples,
-			opvt->framesize,
-			pvt->outbuf.uc,
-			BUFFER_SAMPLES);
+	while (pvt->samples >= opvt->framesize * interleaved) {
 
-		samples += opvt->framesize;
-		pvt->samples -= opvt->framesize;
+		if (opvt->channels == 2 && pvt->interleaved_stereo == 0) {
+			/* No stereo samples, but stereo output (put the same audio on both channels). */
+			opus_int16 stereobuf[opvt->framesize * 2];
+			k = 0;
+			for (i = 0; i < opvt->framesize * 2; i += 2) {
+				stereobuf[i] = opvt->buf[samples + k];
+				stereobuf[i + 1] = opvt->buf[samples + k];
+				k++;
+			}
+			status = opus_encode(opvt->opus, stereobuf, opvt->framesize, pvt->outbuf.uc, BUFFER_SAMPLES);
+		} else {
+			/* Stereo source (interleaved format) and stereo output or everything mono. */
+			status = opus_encode(opvt->opus, opvt->buf + samples, opvt->framesize, pvt->outbuf.uc, BUFFER_SAMPLES);
+		}
+
+		samples += opvt->framesize * interleaved;
+		pvt->samples -= opvt->framesize * interleaved;
 
 		if (status < 0) {
 			ast_log(LOG_ERROR, "Error encoding the Opus frame: %s\n", opus_strerror(status));
@@ -267,6 +296,8 @@ static int opustolin_framein(struct ast_trans_pvt *pvt, struct ast_frame *f)
 	opus_int32 len;
 	unsigned char *src;
 	int status;
+	int k;
+	int i;
 
 	if (!opvt->inited && f->datalen == 0) {
 		return 0; /* we cannot start without data */
@@ -290,6 +321,28 @@ static int opustolin_framein(struct ast_trans_pvt *pvt, struct ast_frame *f)
 		}
 	}
 	decode_fec = opvt->decode_fec_incoming;
+
+	/*
+	 * In case of stereo, we do not use FEC or PLC (yet).
+	 */
+	if (opvt->channels == 2) {
+		/*
+		 * If we have incoming stereo signals, we will only copy one channel to lin.
+		 * Asterisk can't handle stereo signals internally at the moment.
+		 */
+		status = opus_decode(opvt->opus, f->data.ptr, f->datalen, opvt->buf_stereo, BUFFER_SAMPLES, decode_fec);
+		if (status < 0) {
+			ast_log(LOG_ERROR, "Error decoding the Opus stereo frame: %s\n", opus_strerror(status));
+		}
+		k = 0;
+        for (i = 0; i < status * 2; i += 2) {
+			pvt->outbuf.i16[k] = opvt->buf_stereo[i];
+			k++;
+        }
+		pvt->samples += status;
+		pvt->datalen += status * opvt->channels * sizeof(int16_t);
+		return 0;
+	}
 
 	/*
 	 * The Opus Codec, actually its library allows
