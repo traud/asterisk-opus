@@ -47,6 +47,7 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: $")
 #include "asterisk/astobj2.h"           /* for ao2_ref */
 #include "asterisk/cli.h"               /* for ast_cli_entry, ast_cli, etc */
 #include "asterisk/codec.h"             /* for ast_codec_get */
+#include "asterisk/config.h"
 #include "asterisk/format.h"            /* for ast_format_get_attribute_data */
 #include "asterisk/frame.h"             /* for ast_frame, etc */
 #include "asterisk/linkedlists.h"       /* for AST_LIST_NEXT, etc */
@@ -63,6 +64,13 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: $")
 #define	BUFFER_SAMPLES	5760
 #define	MAX_CHANNELS	2
 #define	OPUS_SAMPLES	960
+
+/* Variables that can be set in codecs.conf */
+static int maxbitrate = CODEC_OPUS_DEFAULT_BITRATE;
+static int use_cbr = CODEC_OPUS_DEFAULT_CBR;
+static int use_fec = CODEC_OPUS_DEFAULT_FEC;
+static int use_dtx = CODEC_OPUS_DEFAULT_DTX;
+static int complexity = CODEC_OPUS_DEFAULT_COMPLEXITY;
 
 /* Sample frame data */
 #include "asterisk/slin.h"
@@ -114,12 +122,12 @@ static int opus_encoder_construct(struct ast_trans_pvt *pvt, int sampling_rate)
 {
 	struct opus_coder_pvt *opvt = pvt->pvt;
 	struct opus_attr *attr = pvt->explicit_dst ? ast_format_get_attribute_data(pvt->explicit_dst) : NULL;
-	const opus_int32 bitrate = attr ? attr->maxbitrate  : CODEC_OPUS_DEFAULT_BITRATE;
+	const opus_int32 bitrate = attr ? attr->maxbitrate  : maxbitrate;
 	const int maxplayrate    = attr ? attr->maxplayrate : CODEC_OPUS_DEFAULT_MAX_PLAYBACK_RATE;
 	const int channels       = attr ? attr->stereo + 1  : CODEC_OPUS_DEFAULT_STEREO + 1;
-	const opus_int32 vbr     = attr ? !(attr->cbr)      : !CODEC_OPUS_DEFAULT_CBR;
-	const opus_int32 fec     = attr ? attr->fec         : CODEC_OPUS_DEFAULT_FEC;
-	const opus_int32 dtx     = attr ? attr->dtx         : CODEC_OPUS_DEFAULT_DTX;
+	const opus_int32 vbr     = attr ? !(attr->cbr)      : !use_cbr;
+	const opus_int32 fec     = attr ? attr->fec         : use_fec;
+	const opus_int32 dtx     = attr ? attr->dtx         : use_dtx;
 	const int application    = OPUS_APPLICATION_VOIP;
 	int status = 0;
 
@@ -146,6 +154,7 @@ static int opus_encoder_construct(struct ast_trans_pvt *pvt, int sampling_rate)
 	status = opus_encoder_ctl(opvt->opus, OPUS_SET_VBR(vbr));
 	status = opus_encoder_ctl(opvt->opus, OPUS_SET_INBAND_FEC(fec));
 	status = opus_encoder_ctl(opvt->opus, OPUS_SET_DTX(dtx));
+	status = opus_encoder_ctl(opvt->opus, OPUS_SET_COMPLEXITY(complexity));
 
 	opvt->sampling_rate = sampling_rate;
 	opvt->multiplier = 48000 / sampling_rate;
@@ -793,9 +802,52 @@ static int opus_samples(struct ast_frame *frame)
 	return opus_packet_get_nb_samples(frame->data.ptr, frame->datalen, sampling_rate);
 }
 
+static int parse_config(int reload)
+{
+	struct ast_flags config_flags = { reload ? CONFIG_FLAG_FILEUNCHANGED : 0 };
+	struct ast_config *cfg = ast_config_load("codecs.conf", config_flags);
+	struct ast_variable *var;
+	int res;
+
+	if (cfg == CONFIG_STATUS_FILEMISSING || cfg == CONFIG_STATUS_FILEUNCHANGED || cfg == CONFIG_STATUS_FILEINVALID)
+		return 0;
+
+	for (var = ast_variable_browse(cfg, "opus-open-source"); var; var = var->next) {
+		if (!strcasecmp(var->name, "complexity")) {
+			res = abs(atoi(var->value));
+			if (res > -1 && res < 11) {
+				ast_verb(3, "[opus-open-source] complexity=%d\n", res);
+				complexity = res;
+			} else {
+				ast_log(LOG_ERROR, "Error! Complexity must be 0-10\n");
+			}
+		} else if (!strcasecmp(var->name, CODEC_OPUS_ATTR_MAX_AVERAGE_BITRATE)) {
+			res = abs(atoi(var->value));
+			if (res > -1) {
+				ast_verb(3, "[opus-open-source] %s=%d\n", CODEC_OPUS_ATTR_MAX_AVERAGE_BITRATE, res);
+				maxbitrate = res;
+			} else {
+				ast_log(LOG_ERROR, "Error! %s must be a positive integer\n", CODEC_OPUS_ATTR_MAX_AVERAGE_BITRATE);
+			}
+		} else if (!strcasecmp(var->name, CODEC_OPUS_ATTR_CBR)) {
+			use_cbr = ast_true(var->value) ? 1 : 0;
+			ast_verb(3, "[opus-open-source] %s=%s\n", CODEC_OPUS_ATTR_CBR, use_cbr ? "on" : "off");
+		} else if (!strcasecmp(var->name, CODEC_OPUS_ATTR_FEC)) {
+			use_fec = ast_true(var->value) ? 1 : 0;
+			ast_verb(3, "[opus-open-source] %s=%s\n", CODEC_OPUS_ATTR_FEC, use_fec ? "on" : "off");
+		} else if (!strcasecmp(var->name, CODEC_OPUS_ATTR_DTX)) {
+			use_dtx = ast_true(var->value) ? 1 : 0;
+			ast_verb(3, "[opus-open-source] %s=%s\n", CODEC_OPUS_ATTR_DTX, use_dtx ? "on" : "off");
+		}
+	}
+	ast_config_destroy(cfg);
+	return 0;
+}
+
 static int reload(void)
 {
-	/* Reload does nothing */
+	if (parse_config(1))
+		return AST_MODULE_LOAD_DECLINE;
 	return AST_MODULE_LOAD_SUCCESS;
 }
 
@@ -825,6 +877,9 @@ static int unload_module(void)
 static int load_module(void)
 {
 	int res;
+
+	if (parse_config(0))
+		return AST_MODULE_LOAD_DECLINE;
 
 	opus_codec = ast_codec_get("opus", AST_MEDIA_TYPE_AUDIO, 48000);
 	opus_samples_previous = opus_codec->samples_count;
