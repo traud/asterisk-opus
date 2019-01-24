@@ -23,13 +23,13 @@ MODULES=codec_opus_open_source format_ogg_opus_open_source format_vp8 res_format
 all: $(MODULES)
 
 clean:
-	rm */*.so
+	rm -f */*.so
 
 install: $(MODULES)
 	$(INSTALL) -D -t $(DESTDIR)$(ASTMODDIR) */*.so
 
 uninstall:
-	cd $(ASTMODDIR) && rm $(addsuffix .so,$(MODULES))
+	cd $(ASTMODDIR) && rm -f $(addsuffix .so,$(MODULES))
 
 codec_opus_open_source: LIBS+=-lopus
 codec_opus_open_source: DEFS+=-DAST_MODULE=\"codec_opus_open_source\"
