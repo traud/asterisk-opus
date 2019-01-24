@@ -11,7 +11,6 @@ DEFS=
 INSTALL=/usr/bin/install -c
 LDFLAGS=-pthread -Wl,--warn-common
 LIBS=
-MKDIR_P=/bin/mkdir -p
 SHELL=/bin/sh
 
 ASTMODDIR=$(libdir)/asterisk/modules
@@ -27,8 +26,7 @@ clean:
 	rm */*.so
 
 install: $(MODULES)
-	$(MKDIR_P) $(ASTMODDIR)
-	$(INSTALL) */*.so $(ASTMODDIR)
+	$(INSTALL) -D -t $(DESTDIR)$(ASTMODDIR) */*.so
 
 uninstall:
 	cd $(ASTMODDIR) && rm $(addsuffix .so,$(MODULES))
