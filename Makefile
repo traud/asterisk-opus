@@ -3,13 +3,14 @@ exec_prefix=$(prefix)
 libdir=$(exec_prefix)/lib
 
 CC=gcc
-CFLAGS=-pthread -g3 -O3 -D_FORTIFY_SOURCE=2 -fPIC
+CFLAGS=-pthread -D_FORTIFY_SOURCE=2 -fPIC
+DEBUG=-g3
+OPTIMIZE=-O3
 CPPFLAGS=
 DEFS=
 INSTALL=/usr/bin/install -c
-LDFLAGS=-shared -pthread -Wl,--warn-common
+LDFLAGS=-pthread -Wl,--warn-common
 LIBS=
-MKDIR_P=/bin/mkdir -p
 SHELL=/bin/sh
 
 ASTMODDIR=$(libdir)/asterisk/modules
@@ -22,14 +23,13 @@ MODULES=codec_opus_open_source format_ogg_opus_open_source format_vp8 res_format
 all: $(MODULES)
 
 clean:
-	rm */*.so
+	rm -f */*.so
 
 install: $(MODULES)
-	$(MKDIR_P) $(ASTMODDIR)
-	$(INSTALL) */*.so $(ASTMODDIR)
+	$(INSTALL) -D -t $(DESTDIR)$(ASTMODDIR) */*.so
 
 uninstall:
-	cd $(ASTMODDIR) && rm $(addsuffix .so,$(MODULES))
+	cd $(ASTMODDIR) && rm -f $(addsuffix .so,$(MODULES))
 
 codec_opus_open_source: LIBS+=-lopus
 codec_opus_open_source: DEFS+=-DAST_MODULE=\"codec_opus_open_source\"
@@ -47,4 +47,4 @@ res_format_attr_opus: DEFS+=-DAST_MODULE=\"res_format_attr_opus\"
 res_format_attr_opus: res/res_format_attr_opus.so
 
 .c.so:
-	$(CC) -o $@ $(CPATH) $(DEFS) $(CPPFLAGS) $(CFLAGS) $(LIBS) $(LDFLAGS) $<
+	$(CC) -o $@ $(CPATH) $(DEFS) $(CPPFLAGS) $(CFLAGS) $(DEBUG) $(OPTIMIZE) $(LIBS) -shared $(LDFLAGS) $<
